@@ -1,0 +1,12 @@
+{
+  "name": "kart-chaos-peer-server",
+  "version": "1.0.0",
+  "description": "Signaling server for Kart Chaos 3D",
+  "main": "index.js",
+  "scripts": {
+    "start": "peerjs --port $PORT"
+  },
+  "dependencies": {
+    "peer": "^1.0.2"
+  }
+}
