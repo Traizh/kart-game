@@ -4,69 +4,91 @@ const port = process.env.PORT || 10000;
 const wss = new WebSocketServer({ port });
 
 const rooms = new Map();
+let globalPlayerCounter = 1000;
 
 wss.on('connection', (ws) => {
-    console.log('A player connected to the network');
-    let currentRoom = null;
-    let playerId = Math.random().toString(36).substring(2, 9);
+    console.log('Player linked to socket channel');
+    
+    // Assign a clear numeric ID just like the game expects
+    const playerId = globalPlayerCounter++;
+    let currentRoomId = null;
+    let playerNickname = "Driver";
 
-    // AUTOMATIC FALLBACK: If the game doesn't send a valid room code within 2 seconds, 
-    // we force-generate a room ID and send it back to break past the loading screen!
-    const fallbackTimeout = setTimeout(() => {
-        if (!currentRoom) {
-            currentRoom = "Room-" + Math.floor(1000 + Math.random() * 9000);
-            initializeAndSendRoom(currentRoom);
-        }
-    }, 1500);
-
-    function initializeAndSendRoom(roomName) {
-        currentRoom = roomName;
-        if (!rooms.has(currentRoom)) {
-            rooms.set(currentRoom, new Set());
-        }
-        rooms.get(currentRoom).add(ws);
-        ws.currentRoom = currentRoom;
-
-        // We send EVERY common signaling format back to the game client 
-        // to guarantee it recognizes one of them and stops loading!
-        ws.send(JSON.stringify({ type: 'id', id: playerId, room: currentRoom }));
-        ws.send(JSON.stringify({ type: 'room', id: playerId, room: currentRoom }));
-        ws.send(JSON.stringify({ type: 'connected', roomId: currentRoom, id: playerId }));
-        ws.send(JSON.stringify({ action: 'room_created', room: currentRoom, peerId: playerId }));
-        
-        console.log(`Force-initialized Player ${playerId} into ${currentRoom}`);
-    }
+    // STEP 1: Immediately send the mandatory handshake your code demands
+    ws.send(JSON.stringify({
+        t: 'hello',
+        id: playerId
+    }));
 
     ws.on('message', (message) => {
         try {
-            const data = JSON.parse(message);
-            console.log("Received data from game client:", data);
+            const m = JSON.parse(message);
             
-            // Catch any room registration keywords your game might be using
-            if (data.type === 'join' || data.type === 'create' || data.type === 'host' || data.action === 'join') {
-                clearTimeout(fallbackTimeout);
-                const requestedRoom = data.room || data.roomId || "Lobby-" + playerId;
-                initializeAndSendRoom(requestedRoom);
+            // Handle actions arriving from your local file functions
+            if (m.t === 'join' || m.t === 'create' || m.type === 'join' || m.action === 'join') {
+                playerNickname = m.name || "Player " + playerId;
+                
+                // Use the requested room name, or auto-generate one for host creation
+                currentRoomId = m.room || "ROOM-" + Math.floor(100 + Math.random() * 900);
+                
+                if (!rooms.has(currentRoomId)) {
+                    rooms.set(currentRoomId, new Map());
+                }
+                
+                const roomPlayers = rooms.get(currentRoomId);
+                
+                // Save client reference alongside metadata
+                roomPlayers.set(playerId, { ws, name: playerNickname, id: playerId });
+                ws.currentRoom = currentRoomId;
+                ws.playerId = playerId;
+
+                // Build the structural array your m.players.forEach loop requires
+                const playersArray = [];
+                roomPlayers.forEach((player) => {
+                    playersArray.push({ id: player.id, name: player.name });
+                });
+
+                // STEP 2: Confirm connection using the game's strict data model layout
+                ws.send(JSON.stringify({
+                    t: 'joined',
+                    room: currentRoomId,
+                    id: playerId,
+                    players: playersArray
+                }));
+
+                // Alert existing drivers in that matching race room
+                roomPlayers.forEach((player) => {
+                    if (player.id !== playerId && player.ws.readyState === 1) {
+                        player.ws.send(JSON.stringify({
+                            t: 'peer_join',
+                            id: playerId,
+                            name: playerNickname
+                        }));
+                    }
+                });
+
+                console.log(`Driver ${playerNickname} (${playerId}) initialized into room: ${currentRoomId}`);
                 return;
             }
 
-            // Route standard game coordinates, items, and movements to matching room players
+            // Standard synchronization relay fallback (state adjustments, driving telemetry, item triggers)
             if (ws.currentRoom && rooms.has(ws.currentRoom)) {
-                rooms.get(ws.currentRoom).forEach((client) => {
-                    if (client !== ws && client.readyState === 1) {
-                        client.send(message.toString());
+                const roomPlayers = rooms.get(ws.currentRoom);
+                roomPlayers.forEach((player) => {
+                    if (player.id !== ws.playerId && player.ws.readyState === 1) {
+                        // Inject sender's id directly into the incoming structure payload 
+                        m.id = ws.playerId; 
+                        player.ws.send(JSON.stringify(m));
                     }
                 });
             }
-        } catch (e) {
-            // If the game sends raw strings instead of JSON configurations
-            const msgStr = message.toString();
-            console.log("Received raw string from game client:", msgStr);
-            
+
+        } catch (err) {
+            // Forward raw text payloads across matching lobby targets
             if (ws.currentRoom && rooms.has(ws.currentRoom)) {
-                rooms.get(ws.currentRoom).forEach((client) => {
-                    if (client !== ws && client.readyState === 1) {
-                        client.send(msgStr);
+                rooms.get(ws.currentRoom).forEach((player) => {
+                    if (player.id !== ws.playerId && player.ws.readyState === 1) {
+                        player.ws.send(message.toString());
                     }
                 });
             }
@@ -74,15 +96,26 @@ wss.on('connection', (ws) => {
     });
 
     ws.on('close', () => {
-        clearTimeout(fallbackTimeout);
-        console.log(`Player ${playerId} disconnected`);
+        console.log(`Driver ${playerId} disconnected`);
         if (ws.currentRoom && rooms.has(ws.currentRoom)) {
-            rooms.get(ws.currentRoom).delete(ws);
-            if (rooms.get(ws.currentRoom).size === 0) {
+            const roomPlayers = rooms.get(ws.currentRoom);
+            roomPlayers.delete(playerId);
+
+            // Alert the remaining users so peer_leave can strip away their kart objects
+            roomPlayers.forEach((player) => {
+                if (player.ws.readyState === 1) {
+                    player.ws.send(JSON.stringify({
+                        t: 'peer_leave',
+                        id: playerId
+                    }));
+                }
+            });
+
+            if (roomPlayers.size === 0) {
                 rooms.delete(ws.currentRoom);
             }
         }
     });
 });
 
-console.log(`Kart Chaos multiplayer backend running on port ${port}`);
+console.log(`Kart Chaos matching gateway engine listening on port ${port}`);
