@@ -6,6 +6,9 @@ const wss = new WebSocketServer({ port });
 wss.on('connection', (ws) => {
     console.log('Player connected to lobby');
     
+    // Send a confirmation back to the game client so it knows the connection succeeded
+    ws.send(JSON.stringify({ type: 'connected' }));
+    
     ws.on('message', (message) => {
         // Broadcast game inputs, movement, and room updates to all players
         wss.clients.forEach((client) => {
