@@ -1,12 +1,12 @@
 {
-  "name": "kart-chaos-ws-server",
+  "name": "kart-chaos-peer-server",
   "version": "1.0.0",
-  "description": "WebSocket signaling server for Kart Chaos 3D",
-  "main": "server.js",
+  "description": "Signaling server for Kart Chaos 3D",
+  "main": "index.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "peerjs --port $PORT --path /"
   },
   "dependencies": {
-    "ws": "^8.18.0"
+    "peer": "^1.0.2"
   }
 }
